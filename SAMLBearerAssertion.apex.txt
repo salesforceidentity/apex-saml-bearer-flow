@@ -1,0 +1,106 @@
+public class SAMLBearerAssertion {
+
+    private String subject;
+    private String issuer = 'YOUR CLIENT ID';
+    private String audience = 'https://login.salesforce.com';
+    private String action = 'https://login.salesforce.com/services/oauth2/token'; 
+    
+    private string notBefore;
+    private String notOnOrAfter;
+
+    private String assertionId; 
+    private string digest1;
+    private string signature1;
+    
+    private String encodedKey = 'MIIEowIBAAKCAQEArkHsUPyr6To5sW...pem encoded key';
+
+	//DON'T TOUCH THESE STRINGS
+    private String preCannonicalizedResponse = '<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="ASSERTION_ID" IssueInstant="NOT_BEFORE" Version="2.0"><saml:Issuer Format="urn:oasis:names:tc:SAML:2.0:nameid-format:entity">ISSUER</saml:Issuer><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified">SUBJECT</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData NotOnOrAfter="NOT_ON_OR_AFTER" Recipient="RECIPIENT"></saml:SubjectConfirmationData></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="NOT_BEFORE" NotOnOrAfter="NOT_ON_OR_AFTER"><saml:AudienceRestriction><saml:Audience>AUDIENCE</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="NOT_BEFORE"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement></saml:Assertion>';
+    private String preCannonicalizedSignedInfo = '<ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></ds:CanonicalizationMethod><ds:SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"></ds:SignatureMethod><ds:Reference URI="#ASSERTION_ID"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"></ds:Transform><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"></ds:Transform></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"></ds:DigestMethod><ds:DigestValue>DIGEST</ds:DigestValue></ds:Reference></ds:SignedInfo>';
+    private String signatureBlock = '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">SIGNED_INFO<ds:SignatureValue>SIGNATURE_VALUE</ds:SignatureValue></ds:Signature><saml:Subject>';
+    
+    
+    public SAMLBearerAssertion() {
+        subject = 'YOUR USER';
+        
+        datetime nowDt = datetime.now();
+        Long nowLong = nowDt.getTime();
+        datetime notBeforeDt = datetime.newInstance(nowLong - 120000);
+        
+        notBefore = notBeforeDt.formatGmt('yyyy-MM-dd\'T\'HH:mm:ss') + 'Z';
+        datetime notOnOrAfterDt = nowDt.addMinutes(5);
+        notOnOrAfter = notOnOrAfterDt.formatGmt('yyyy-MM-dd\'T\'HH:mm:ss') + 'Z';
+        
+        Double random = Math.random();
+        assertionId = EncodingUtil.convertToHex(Crypto.generateDigest('SHA256',  Blob.valueOf('assertion' + random)));
+        
+    }
+
+    public String getResult(){
+              
+        preCannonicalizedResponse = preCannonicalizedResponse.replaceAll('ASSERTION_ID',assertionId);
+        preCannonicalizedResponse = preCannonicalizedResponse.replaceAll('ISSUER',issuer);
+        preCannonicalizedResponse = preCannonicalizedResponse.replaceAll('AUDIENCE',audience);
+        preCannonicalizedResponse = preCannonicalizedResponse.replaceAll('RECIPIENT',action);
+        preCannonicalizedResponse = preCannonicalizedResponse.replaceAll('SUBJECT',subject);
+        preCannonicalizedResponse = preCannonicalizedResponse.replaceAll('NOT_BEFORE',notBefore);
+        preCannonicalizedResponse = preCannonicalizedResponse.replaceAll('NOT_ON_OR_AFTER',notOnOrAfter);
+        
+        //Prepare the Digest
+        Blob digest = Crypto.generateDigest('SHA1',  Blob.valueOf(preCannonicalizedResponse));
+        String digestString = EncodingUtil.base64Encode(digest);
+
+        //Prepare the SignedInfo
+        preCannonicalizedSignedInfo = preCannonicalizedSignedInfo.replaceAll('ASSERTION_ID',assertionId);
+        preCannonicalizedSignedInfo = preCannonicalizedSignedInfo.replaceAll('DIGEST',digestString);
+                
+        //Sign the SignedInfo
+        Blob privateKey = EncodingUtil.base64Decode(encodedKey);
+        Blob input = Blob.valueOf(preCannonicalizedSignedInfo);
+                
+        Blob signature = Crypto.sign('RSA', input, privateKey);
+        //Blob signature = Blob.valueOf('foo');
+        String signatureString = EncodingUtil.base64Encode(signature);
+        
+        //Prepare the signature block
+        signatureBlock = signatureBlock.replaceAll('SIGNED_INFO',preCannonicalizedSignedInfo);
+        signatureBlock = signatureBlock.replaceAll('SIGNATURE_VALUE',signatureString);
+        
+        //cheap trick for enveloping the signature by swapping out last element with sig + last elements of whole message
+        preCannonicalizedResponse = preCannonicalizedResponse.replaceAll('<saml:Subject>', signatureBlock );
+        
+        //return the prefix + our prepped message
+        System.debug('ASSERTION:' + preCannonicalizedResponse);
+        return preCannonicalizedResponse;
+  
+    }
+    
+     public String base64URLencode(Blob input){ 
+        String output = encodingUtil.base64Encode(input);
+        output = output.replace('+', '-');
+        output = output.replace('/', '_');
+        while ( output.endsWith('=')){
+            output = output.subString(0,output.length()-1);
+        }
+        return output;
+   }
+   
+    public void postSAML()
+   {
+        String saml = getResult();
+        System.debug('\n===============SAML==============\n: ' + saml);
+        http h = new http();
+        httpRequest req = new httpRequest();
+        req.setHeader('Content-Type','application/x-www-form-urlencoded');
+        req.setMethod('POST');
+        String param = 'grant_type=' + encodingUtil.urlEncode('urn:ietf:params:oauth:grant-type:saml2-bearer','UTF-8')+'&assertion=' + base64URLencode(blob.valueOf(saml)); 
+        req.setBody(param);
+        
+        req.setEndpoint(action);
+        //req.setEndpoint('http://requestb.in/17tx5is1');
+        httpResponse res = h.send(req);
+        System.debug('\n\nRESPONSE: ' + res.getBody());
+        System.debug('\n\nRESPONSE: ' + res.getStatusCode() + '  ' + res.getStatus()); 
+   }
+   
+}
